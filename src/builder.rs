@@ -184,6 +184,7 @@ impl Builder {
     /// ```
     pub fn dynamic_label<S: Into<String>>(mut self, key: S) -> Result<Builder, Error> {
         let label = ValidatedLabel::new(key.into())?;
+        tracing::warn!("Dyn label: {:?}", label);
         if self.labels.contains(&label) {
             return Err(Error(ErrorI::DuplicateLabel(label.inner().to_owned())));
         }

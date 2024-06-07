@@ -599,6 +599,7 @@ impl Future for BackgroundTask {
         let mut default_guard = tracing::subscriber::set_default(NoSubscriber::default());
 
         while let Poll::Ready(maybe_maybe_item) = Pin::new(&mut self.receiver).poll_next(cx) {
+            tracing::warn!("Received: {:?}", maybe_maybe_item.is_some());
             match maybe_maybe_item {
                 Some(Some(item)) => self.get_queue_for_event(&item).push(item),
                 Some(None) => self.quitting = true, // Explicit close.
