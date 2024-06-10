@@ -260,6 +260,8 @@ struct LokiEvent {
 
     #[cfg(feature = "dynamic-labels")]
     formatted_labels: String,
+
+    headers: HashMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -284,6 +286,9 @@ struct Fields {
 
 impl Fields {
     fn record_impl(&mut self, field: &Field, value: serde_json::Value) {
+        panic!();
+        eprintln!("{field:?} = {value:?}");
+        println!("VISITOR {field:?} = {value:?}");
         self.fields.insert(field.name().into(), value);
     }
     fn record<T: Into<serde_json::Value>>(&mut self, field: &Field, value: T) {
@@ -315,8 +320,17 @@ impl Visit for Fields {
     }
 }
 
+struct DebugVisitor;
+
+impl tracing_core::field::Visit for DebugVisitor {
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        println!("record_debug: {field:?} {value:?}");
+    }
+}
+
 impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for Layer {
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: TracingContext<'_, S>) {
+        println!("new span! {id:?}");
         let span = ctx.span(id).expect("Span not found, this is a bug");
         let mut extensions = span.extensions_mut();
         if extensions.get_mut::<Fields>().is_none() {
@@ -326,15 +340,20 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         }
     }
     fn on_record(&self, id: &Id, values: &Record<'_>, ctx: TracingContext<'_, S>) {
+        println!("I DONT KNOW");
         let span = ctx.span(id).expect("Span not found, this is a bug");
         let mut extensions = span.extensions_mut();
         let fields = extensions.get_mut::<Fields>().expect("unregistered span");
         values.record(fields);
     }
     fn on_event(&self, event: &Event<'_>, ctx: TracingContext<'_, S>) {
+        let mut dbg = DebugVisitor;
+        event.record(&mut dbg);
         let timestamp = SystemTime::now();
         let normalized_meta = event.normalized_metadata();
+        println!("normalized_meta: {:?}", normalized_meta.as_ref().map(| m| m.fields()));
         let meta = normalized_meta.as_ref().unwrap_or_else(|| event.metadata());
+        println!("meta: {meta:?}" );
         let mut span_fields: serde_json::Map<String, serde_json::Value> = Default::default();
         let spans = event
             .parent()
@@ -364,6 +383,17 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
             event.record(&mut label_selector);
             label_selector.finish(*meta.level())
         };
+
+            println!("spans: {spans:?}");
+            println!("span_fields: {span_fields:?}");
+        for f in event.fields() {
+            println!("field: {f:?}");
+            println!("field name: {:?}", f.name());
+            if f.name().starts_with("headers.") {
+            println!("header overwrite detected!");
+            }
+        }
+
         // TODO: Anything useful to do when the capacity has been reached?
         // (the capacity is quite large so if it happens we have bigger problems)
         let _ = self.sender.try_send(Some(LokiEvent {
@@ -386,6 +416,8 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
 
             #[cfg(feature = "dynamic-labels")]
             formatted_labels,
+
+            headers: HashMap::new(),
         }));
     }
 }
