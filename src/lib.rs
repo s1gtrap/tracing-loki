@@ -320,11 +320,31 @@ impl Visit for Fields {
     }
 }
 
-struct DebugVisitor;
+struct HeaderVisitor(HashMap<String, String>);
 
-impl tracing_core::field::Visit for DebugVisitor {
+impl tracing_core::field::Visit for HeaderVisitor {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        println!("record_debug: {field:?} {value:?}");
+        if field.name().starts_with("headers.") {
+            println!("record_debug: {field:?} {value:?}");
+            let header = &field.name()["headers.".len()..];
+
+            // check if header is some
+            if header.is_empty() {
+                panic!("empty header: {header}: {value:?}"); // FIXME: should error nicely
+            }
+
+            // check if header is legal (courtesy of https://www.ibm.com/docs/en/sva/10.0.7?topic=stanza-http-header)
+            if !header
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            // FIXME: extract to
+            // helper somewhere
+            {
+                panic!("invalid header: {header}: {value:?}"); // FIXME: should error nicely
+            }
+
+            self.0.insert(header.to_string(), format!("{value:?}"));
+        }
     }
 }
 
@@ -347,13 +367,17 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
         values.record(fields);
     }
     fn on_event(&self, event: &Event<'_>, ctx: TracingContext<'_, S>) {
-        let mut dbg = DebugVisitor;
+        let mut dbg = HeaderVisitor(HashMap::new());
         event.record(&mut dbg);
+        println!("GOT HEADERS: {:?}", dbg.0);
         let timestamp = SystemTime::now();
         let normalized_meta = event.normalized_metadata();
-        println!("normalized_meta: {:?}", normalized_meta.as_ref().map(| m| m.fields()));
+        println!(
+            "normalized_meta: {:?}",
+            normalized_meta.as_ref().map(|m| m.fields())
+        );
         let meta = normalized_meta.as_ref().unwrap_or_else(|| event.metadata());
-        println!("meta: {meta:?}" );
+        println!("meta: {meta:?}");
         let mut span_fields: serde_json::Map<String, serde_json::Value> = Default::default();
         let spans = event
             .parent()
@@ -384,16 +408,6 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
             label_selector.finish(*meta.level())
         };
 
-            println!("spans: {spans:?}");
-            println!("span_fields: {span_fields:?}");
-        for f in event.fields() {
-            println!("field: {f:?}");
-            println!("field name: {:?}", f.name());
-            if f.name().starts_with("headers.") {
-            println!("header overwrite detected!");
-            }
-        }
-
         // TODO: Anything useful to do when the capacity has been reached?
         // (the capacity is quite large so if it happens we have bigger problems)
         let _ = self.sender.try_send(Some(LokiEvent {
@@ -417,7 +431,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for La
             #[cfg(feature = "dynamic-labels")]
             formatted_labels,
 
-            headers: HashMap::new(),
+            headers: dbg.0,
         }));
     }
 }
@@ -632,7 +646,9 @@ impl Future for BackgroundTask {
 
         while let Poll::Ready(maybe_maybe_item) = Pin::new(&mut self.receiver).poll_next(cx) {
             match maybe_maybe_item {
-                Some(Some(item)) => self.get_queue_for_event(&item).push(item),
+                Some(Some(item)) => {
+                    let item: LokiEvent = item;
+                self.get_queue_for_event(&item).push(item)},
                 Some(None) => self.quitting = true, // Explicit close.
                 None => self.quitting = true,       // The sender was dropped.
             }
@@ -702,6 +718,9 @@ impl Future for BackgroundTask {
                     async move {
                         request_builder
                             .header(reqwest::header::CONTENT_TYPE, "application/x-snappy")
+                            //.headers(dbg.0.iter().map(|(k, v)| {
+                                //(reqwest::header::HeaderName::try_from(k).unwrap(), v)
+                            //}).collect())
                             .body(body)
                             .send()
                             .await?
